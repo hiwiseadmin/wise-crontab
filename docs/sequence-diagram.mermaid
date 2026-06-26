@@ -1,0 +1,159 @@
+sequenceDiagram
+    autonumber
+    actor System as 系统Crontab
+    participant RunCmd as Run命令<br/>(wscrontab:run)
+    participant Manager as CrontabManager
+    participant ConfigRepo as ConfigTaskRepository
+    participant DBRepo as DatabaseTaskRepository
+    participant Cron as CronExpression
+    participant Event as Event系统
+    participant Executor as TaskExecutor
+    participant Lock as TaskLock
+    participant Process as Symfony Process
+    participant LogDB as TaskLogModel
+
+    Note over System: 每分钟触发一次
+
+    System->>RunCmd: php think wscrontab:run
+
+    RunCmd->>Manager: new CrontabManager(config)
+    RunCmd->>Manager: dispatch()
+
+    Note over Manager: === 加载任务（DB优先） ===
+
+    Manager->>DBRepo: isAvailable()?
+    alt 数据库可用
+        Manager->>DBRepo: all()
+        DBRepo-->>Manager: 数据库任务列表
+    end
+
+    Manager->>ConfigRepo: all()
+    ConfigRepo-->>Manager: 配置文件任务列表
+
+    Note over Manager: 合并任务<br/>数据库覆盖同名配置任务
+
+    Note over Manager: === 遍历到期任务 ===
+
+    loop 每个启用任务
+        Manager->>Cron: new CronExpression(task.cron_expression)
+        Manager->>Cron: isDue('now')
+        Cron-->>Manager: true/false
+
+        alt 任务到期
+            Manager->>Event: trigger(BeforeTaskExecute)
+            Event-->>Manager: 事件已分发
+
+            Note over Manager: 检查 allow_concurrent
+
+            alt allow_concurrent = false
+                Manager->>Lock: acquire(task.name)
+                Lock-->>Manager: true (获取锁成功)
+            end
+
+            Manager->>Executor: execute(task, lock)
+
+            Note over Executor: === 子进程执行 ===
+
+            Executor->>LogDB: 创建日志(status=running)
+            LogDB-->>Executor: log
+
+            Executor->>Process: new Process(task.command)
+            Executor->>Process: setTimeout(task.timeout)
+            Executor->>Process: run()
+
+            Process-->>Executor: exit_code, stdout, stderr
+
+            Note over Executor: 计算 duration
+
+            alt exit_code = 0
+                Executor->>LogDB: 更新日志(status=success)
+                Executor->>Event: trigger(AfterTaskExecute)
+            else exit_code != 0
+                Note over Executor: 判断是否需要重试
+                alt retry_count < max_retries
+                    Note over Executor: 递归重试 execute()
+                else 超过重试次数
+                    Executor->>LogDB: 更新日志(status=failure)
+                    Executor->>Event: trigger(TaskExecuteFailed)
+                end
+            end
+
+            Executor->>Lock: release(task.name)
+            Executor-->>Manager: 执行结果
+
+        else 任务未到期
+            Note over Manager: 跳过
+        end
+    end
+
+    Manager-->>RunCmd: 调度统计
+    RunCmd-->>System: return 0
+
+---
+
+sequenceDiagram
+    autonumber
+    actor Caller as 调用方
+    participant Executor as TaskExecutor
+    participant Lock as TaskLock
+    participant Model as TaskLogModel
+    participant Process as Symfony Process
+
+    Caller->>Executor: execute(task, lock)
+
+    Note over Executor: Step 1: 防并发检查
+
+    Executor->>Lock: acquire(task.name)
+    alt 获取锁失败（已被锁定）
+        Lock-->>Executor: false
+        Executor-->>Caller: {status: 'skipped', reason: 'locked'}
+        Note over Executor: 任务被跳过（不视为失败）
+    else 获取锁成功
+        Lock-->>Executor: true
+
+        Note over Executor: Step 2: 记录开始日志
+
+        Executor->>Model: 创建 TaskLog
+        Note over Model: status='running'<br/>start_time=now<br/>task_name=task.name
+
+        Note over Executor: Step 3: 启动子进程
+
+        Executor->>Process: new Process(task.command)
+        Executor->>Process: setTimeout(task.timeout)
+        Executor->>Process: run()
+
+        alt 进程正常退出
+            Process-->>Executor: exit_code, stdout, stderr
+            Note over Executor: duration = end_time - start_time
+        else 进程超时
+            Process-->>Executor: timeout exception
+            Note over Executor: exit_code = -1<br/>error_output = 'timeout'
+        end
+
+        Note over Executor: Step 4: 截断输出
+
+        Executor->>Executor: truncateOutput(output)
+        Note over Executor: 超过 output_max_bytes 截断
+
+        Note over Executor: Step 5: 更新日志 + 事件
+
+        alt exit_code = 0
+            Executor->>Model: update TaskLog
+            Note over Model: status='success'<br/>exit_code=0<br/>end_time=now<br/>duration=xxx
+            Executor->>Executor: trigger(AfterTaskExecute)
+            Executor-->>Caller: {status: 'success', exit_code: 0}
+        else exit_code != 0
+            opt retry_count < task.max_retries
+                Executor->>Model: update TaskLog(retry_count++)
+                Note over Executor: 递归调用 execute()
+            end
+            Executor->>Model: update TaskLog
+            Note over Model: status='failure'<br/>exit_code=xxx<br/>end_time=now
+            Executor->>Executor: trigger(TaskExecuteFailed)
+            Executor-->>Caller: {status: 'failure', exit_code: xxx}
+        end
+
+        Note over Executor: Step 6: 释放锁
+
+        Executor->>Lock: release(task.name)
+    end
