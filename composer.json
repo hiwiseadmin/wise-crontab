@@ -1,14 +1,31 @@
 {
     "name": "wiseadmin/wise-crontab",
-    "description": "WiseAdmin 定时任务调度引擎 — 支持 Cron 表达式、双驱动任务源、分布式锁、任务编排、告警通知、并行执行",
+    "description": "WiseAdmin 定时任务调度引擎 — 支持 Cron 表达式、双驱动任务源、分布式锁、任务编排、告警通知与并行执行",
+    "homepage": "https://github.com/hiwiseadmin/wise-crontab",
     "type": "library",
     "license": "MIT",
     "authors": [
         {
-            "name": "WiseAdmin",
+            "name": "WiseAdmin Team",
             "email": "wiseadmin@126.com"
         }
     ],
+    "require": {
+        "php": ">=8.1",
+        "topthink/framework": "^6.0 || ^8.0",
+        "topthink/think-orm": "^2.0 || ^3.0",
+        "dragonmantank/cron-expression": "^3.3",
+        "symfony/process": "^6.0 || ^7.0",
+        "ext-json": "*"
+    },
+    "require-dev": {
+        "phpunit/phpunit": ">=9.0"
+    },
+    "suggest": {
+        "topthink/think-queue": "异步日志写入和任务队列支持",
+        "topthink/think-cache": "Redis 分布式锁和缓存支持",
+        "wiseadmin/wise-notification": "任务失败多渠道告警通知"
+    },
     "autoload": {
         "psr-4": {
             "wise\\crontab\\": "src/"
@@ -20,22 +37,8 @@
             "wise\\crontab\\test\\": "tests/"
         }
     },
-    "require": {
-        "php": ">=8.1",
-        "topthink/framework": "^6.0 || ^8.0",
-        "topthink/think-orm": "^2.0 || ^3.0",
-        "dragonmantank/cron-expression": "^3.3",
-        "symfony/process": "^6.0 || ^7.0",
-        "ext-json": "*"
-    },
-    "suggest": {
-        "topthink/think-queue": "异步日志写入和任务队列支持",
-        "topthink/think-cache": "Redis 分布式锁和缓存支持",
-        "wiseadmin/wise-notification": "任务失败多渠道告警通知"
-    },
-    "require-dev": {
-        "phpunit/phpunit": ">=9.0"
-    },
+    "minimum-stability": "stable",
+    "prefer-stable": true,
     "extra": {
         "think": {
             "services": [
@@ -47,6 +50,17 @@
             "migrate-path": "database/migrations"
         }
     },
-    "minimum-stability": "stable",
-    "prefer-stable": true
+    "archive": {
+        "exclude": [
+            "/tests",
+            "/docs",
+            "/.github",
+            "/phpunit.xml",
+            "/.gitattributes",
+            "/.gitignore",
+            "/*.md",
+            "!/README.md",
+            "/qa/"
+        ]
+    }
 }
