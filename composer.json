@@ -1,0 +1,67 @@
+{
+    "name": "wiseadmin/wise-crontab",
+    "description": "WiseAdmin 定时任务调度引擎 — 支持语义化调度与 Cron 表达式、双驱动任务源、分布式锁、任务编排、告警通知、并行执行与后台可视化界面",
+    "homepage": "https://github.com/hiwiseadmin/wise-crontab",
+    "type": "library",
+    "license": "Apache-2.0",
+    "authors": [
+        {
+            "name": "WiseAdmin Team",
+            "email": "wiseadmin@126.com"
+        }
+    ],
+    "require": {
+        "php": ">=8.1",
+        "topthink/framework": "^8.0",
+        "topthink/think-orm": "^3.0",
+        "symfony/process": "^6.0 || ^7.0",
+        "ext-json": "*",
+        "wiseadmin/wise-support": "1.0.*"
+    },
+    "require-dev": {
+        "phpunit/phpunit": ">=9.0"
+    },
+    "suggest": {
+        "topthink/think-queue": "后台「立即执行」异步投递与任务队列支持",
+        "topthink/think-cache": "手动执行限流、Redis 分布式锁和缓存支持",
+        "wiseadmin/wise-notification": "任务失败多渠道告警通知",
+        "wiseadmin/wise-operation-log": "后台启停/立即执行/删除操作审计",
+        "wiseadmin/wise-mcp": "将定时任务以 MCP 工具暴露给外部 MCP 客户端"
+    },
+    "autoload": {
+        "psr-4": {
+            "wise\\crontab\\": "src/"
+        },
+        "files": []
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "wise\\crontab\\test\\": "tests/"
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true,
+    "extra": {
+        "think": {
+            "services": [
+                "wise\\crontab\\CrontabServiceProvider"
+            ],
+            "config": {
+                "wise-crontab": "config/wise-crontab.php"
+            }
+        }
+    },
+    "archive": {
+        "exclude": [
+            "/tests",
+            "/docs",
+            "/.github",
+            "/phpunit.xml",
+            "/.gitattributes",
+            "/.gitignore",
+            "/*.md",
+            "!/README.md",
+            "/qa/"
+        ]
+    }
+}

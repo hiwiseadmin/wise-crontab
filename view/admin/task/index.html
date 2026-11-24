@@ -1,0 +1,329 @@
+{extend name="__WISE_VIEW__/base"}
+
+{block name="title"}定时任务{/block}
+
+{block name="content"}
+<div class="app-main container-fluid">
+    {include file="__WISE_VIEW__/index_header" icon="bi bi-alarm" caption="定时任务" buttongroup="" /}
+
+    {if $schedule_error_count > 0}
+    <div class="alert alert-warning d-flex align-items-start gap-2">
+        <i class="bi bi-exclamation-triangle-fill mt-1"></i>
+        <div class="flex-grow-1">
+            检测到 <strong>{$schedule_error_count}</strong> 个任务的调度表达式非法，这些任务不会被调度。
+            <button type="button" class="btn btn-sm btn-link p-0 align-baseline" data-crontab-fn="showErrors">查看详情</button>
+        </div>
+    </div>
+    {/if}
+
+    <form id="ws-filter" class="ws-filter-bar ws-filter-form row g-2 align-items-end" novalidate data-default-visible="1">
+        <div class="col-12 col-md-6 col-lg-3 ws-filter-item" data-field="keyword">
+            <label class="form-label" for="filter-keyword">关键词</label>
+            <input type="text" id="filter-keyword" name="keyword" class="form-control form-control-sm"
+                   placeholder="任务名 / 标题 / 命令" autocomplete="off">
+        </div>
+        <div class="col-12 col-md-6 col-lg-2 ws-filter-item" data-field="status">
+            <label class="form-label" for="filter-status">状态</label>
+            <select id="filter-status" name="status" class="form-select form-select-sm">
+                <option value="">全部状态</option>
+                <option value="1">启用</option>
+                <option value="0">停用</option>
+            </select>
+        </div>
+        <div class="col-12 col-lg-5 ws-filter-actions ms-auto justify-content-lg-end">
+            <button type="button" class="btn btn-sm btn-primary ws-filter-submit">
+                <i class="bi bi-search me-1"></i>查询
+            </button>
+            <button type="button" class="btn btn-sm btn-outline-secondary ws-filter-reset">重置</button>
+            <button type="button" class="btn btn-sm btn-success" data-crontab-fn="createTask">
+                <i class="bi bi-plus-lg me-1"></i>新增任务
+            </button>
+        </div>
+    </form>
+
+    <div id="toolbar" class="ws-toolbar"></div>
+    <table id="table"></table>
+
+    <p class="text-muted small mt-2 mb-0">
+        时区：{$timezone}。「下次执行时间」由 Cron 表达式按该时区推算；
+        「只读」任务来自配置文件 config/wise-crontab.php，需改配置文件后重启调度生效。
+    </p>
+</div>
+{/block}
+
+{block name="js"}
+{include file="admin/_crontab_api" /}
+<script nonce="{$csp_nonce|default=''}">
+(function (w) {
+    'use strict';
+
+    var table = null;
+
+    function esc(v) {
+        return w.EnhancedTable && w.EnhancedTable.utils
+            ? w.EnhancedTable.utils.escape(v == null ? '' : String(v))
+            : String(v == null ? '' : v).replace(/[&<>"']/g, function (c) {
+                return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+            });
+    }
+
+    var LOG_BADGE = { success: 'success', failure: 'danger', skipped: 'secondary', running: 'info' };
+    var LOG_TEXT = { success: '成功', failure: '失败', skipped: '跳过', running: '执行中' };
+
+    function logBadge(log) {
+        if (!log) { return '<span class="text-muted">未执行</span>'; }
+        var status = String(log.status || '');
+        var color = LOG_BADGE[status] || 'secondary';
+        var text = LOG_TEXT[status] || status;
+        var extra = log.duration_text && log.duration_text !== '-' ? ' <small class="text-muted">' + esc(log.duration_text) + '</small>' : '';
+        var title = esc(log.start_time || '');
+        return '<span class="badge bg-' + color + '" title="' + title + '">' + esc(text) + '</span>' + extra;
+    }
+
+    function taskCell(value, row) {
+        var title = esc(row.title || row.name || '');
+        var name = '<div class="text-muted small">' + esc(row.name || '') + '</div>';
+        var readonly = row.editable ? '' : ' <span class="badge bg-secondary" title="来自配置文件，后台不可编辑">只读</span>';
+        return '<div>' + title + readonly + name + '</div>';
+    }
+
+    function commandCell(value) {
+        var text = String(value || '');
+        return '<code class="d-inline-block text-truncate" style="max-width:320px" title="' + esc(text) + '">' + esc(text) + '</code>';
+    }
+
+    function scheduleCell(value, row) {
+        var desc = esc(row.schedule_description || value || '-');
+        var cron = row.cron_expression ? '<div class="text-muted small">' + esc(row.cron_expression) + '</div>' : '';
+        var err = row.schedule_error ? '<div class="text-danger small">' + esc(row.schedule_error) + '</div>' : '';
+        return '<div>' + desc + cron + err + '</div>';
+    }
+
+    function statusCell(value) {
+        var on = Number(value) === 1;
+        return '<span class="badge bg-' + (on ? 'success' : 'secondary') + '">' + (on ? '启用' : '停用') + '</span>';
+    }
+
+    function operateCell(value, row) {
+        var name = esc(row.name || '');
+        var status = Number(row.status) === 1 ? 1 : 0;
+        var html = '<div class="btn-group btn-group-sm">';
+
+        if (row.editable) {
+            html += '<button type="button" class="btn btn-outline-primary" title="编辑"'
+                + ' data-crontab-fn="editTask" data-crontab-name="' + name + '"><i class="bi bi-pencil"></i></button>';
+        }
+        html += '<button type="button" class="btn btn-outline-success" title="立即执行"'
+            + ' data-crontab-fn="runTask" data-crontab-name="' + name + '"><i class="bi bi-play-fill"></i></button>';
+        if (row.editable) {
+            html += '<button type="button" class="btn btn-outline-secondary" title="' + (status ? '停用' : '启用') + '"'
+                + ' data-crontab-fn="toggleTask" data-crontab-name="' + name + '" data-status="' + status + '">'
+                + '<i class="bi ' + (status ? 'bi-pause-fill' : 'bi-play-circle') + '"></i></button>'
+                + '<button type="button" class="btn btn-outline-danger" title="删除"'
+                + ' data-crontab-fn="deleteTask" data-crontab-name="' + name + '"><i class="bi bi-trash"></i></button>';
+        }
+
+        return html + '</div>';
+    }
+
+    function currentRow(name) {
+        if (!table) { return null; }
+        var rows = table.table ? table.table.bootstrapTable('getData') : [];
+        for (var i = 0; i < rows.length; i++) {
+            if (String(rows[i].name) === String(name)) { return rows[i]; }
+        }
+        return null;
+    }
+
+    function init() {
+        table = w.Wise.table.createSync({
+            idTable: 'table',
+            url: '/admin/crontab/task/getlist',
+            dataDataField: 'data.list',
+            dataTotalField: 'data.total',
+            pageSize: 20,
+            toolbarBtn: ['refresh'],
+            queryParams: function (params) {
+                var limit = params.limit > 0 ? params.limit : 20;
+                var keyword = w.jQuery('#filter-keyword').val() || '';
+                var status = w.jQuery('#filter-status').val();
+                return {
+                    page: Math.floor((params.offset || 0) / limit) + 1,
+                    limit: limit,
+                    keyword: keyword,
+                    status: status === undefined ? '' : status
+                };
+            },
+            columns: [
+                { field: 'title', title: '任务', formatter: taskCell, width: 220 },
+                { field: 'command', title: '执行命令', formatter: commandCell },
+                { field: 'schedule', title: '调度', formatter: scheduleCell, width: 220 },
+                { field: 'next_run_at', title: '下次执行', width: 170, align: 'center' },
+                { field: 'last_log', title: '上次结果', formatter: function (v) { return logBadge(v); }, width: 150, align: 'center' },
+                { field: 'status', title: '状态', formatter: statusCell, width: 90, align: 'center' },
+                { field: 'operate', title: '操作', formatter: operateCell, width: 180, align: 'center' }
+            ]
+        });
+
+        if (w.Wise.crud) {
+            w.Wise.crud.bindFilterBar({ form: '#ws-filter', table: table });
+        }
+    }
+
+    // ── 表单 ────────────────────────────────────────────────────────────
+    function formHtml(row) {
+        var r = row || {};
+        var options = function (value, list) {
+            return list.map(function (item) {
+                var sel = String(value) === String(item[0]) ? ' selected' : '';
+                return '<option value="' + item[0] + '"' + sel + '>' + item[1] + '</option>';
+            }).join('');
+        };
+
+        return '<div class="row g-3">'
+            + '<div class="col-12 col-md-6"><label class="form-label">任务名称<span class="text-danger">*</span></label>'
+            + '<input type="text" class="form-control" name="name" value="' + esc(r.name || '') + '"'
+            + (r.id ? ' readonly' : ' placeholder="唯一标识，如 clean:temp"') + '>'
+            + (r.id ? '<div class="form-text">任务名称是调度与日志的唯一键，创建后不可修改</div>' : '')
+            + '</div>'
+            + '<div class="col-12 col-md-6"><label class="form-label">显示标题</label>'
+            + '<input type="text" class="form-control" name="title" value="' + esc(r.title || '') + '" placeholder="留空取任务名称"></div>'
+            + '<div class="col-12"><label class="form-label">执行命令<span class="text-danger">*</span></label>'
+            + '<input type="text" class="form-control" name="command" value="' + esc(r.command || '') + '" placeholder="php think xxx（须命中白名单）"></div>'
+            + '<div class="col-12"><label class="form-label">调度表达式<span class="text-danger">*</span></label>'
+            + '<input type="text" class="form-control" name="schedule" value="' + esc(r.schedule || r.cron_expression || '') + '" placeholder="每5分钟 / 每天凌晨2点 / */5 * * * *">'
+            + '<div class="form-text">支持语义化（每5分钟、daily at 02:30）与 5 段 cron</div></div>'
+            + '<div class="col-6 col-md-3"><label class="form-label">超时（秒）</label>'
+            + '<input type="number" min="1" class="form-control" name="timeout" value="' + esc(r.timeout || 300) + '"></div>'
+            + '<div class="col-6 col-md-3"><label class="form-label">失败重试</label>'
+            + '<input type="number" min="0" class="form-control" name="max_retries" value="' + esc(r.max_retries || 0) + '"></div>'
+            + '<div class="col-6 col-md-3"><label class="form-label">允许并发</label>'
+            + '<select class="form-select" name="allow_concurrent">' + options(r.allow_concurrent || 0, [['0', '否（默认）'], ['1', '是']]) + '</select></div>'
+            + '<div class="col-6 col-md-3"><label class="form-label">状态</label>'
+            + '<select class="form-select" name="status">' + options(r.status === undefined ? 1 : r.status, [['1', '启用'], ['0', '停用']]) + '</select></div>'
+            + '<input type="hidden" name="id" value="' + esc(r.id || 0) + '">'
+            + '</div>';
+    }
+
+    function openForm(row) {
+        var ui = w.Wise && w.Wise.ui;
+        if (!ui || !ui.dialog || typeof ui.dialog.form !== 'function') {
+            w.CrontabApi.toast('弹窗组件未就绪，请刷新页面重试', 'danger');
+            return;
+        }
+
+        ui.dialog.form({
+            title: row ? '编辑定时任务' : '新增定时任务',
+            size: 'lg',
+            html: formHtml(row),
+            action: '/admin/crontab/task/save',
+            submitText: '保存',
+            onSuccess: function () {
+                if (table) { table.refresh(); }
+            }
+        });
+    }
+
+    // ── 动作（供 data-crontab-fn 委托调用）────────────────────────────────
+    w.createTask = function () { openForm(null); };
+
+    w.editTask = function (name) {
+        var row = currentRow(name);
+        if (!row) { w.CrontabApi.toast('未取到任务数据，请刷新后重试', 'danger'); return; }
+        openForm(row);
+    };
+
+    w.runTask = function (name) {
+        w.CrontabApi.confirm('立即执行任务「' + name + '」？执行在后台队列中进行，结果稍后见执行日志。', '确认执行')
+            .then(function (yes) {
+                if (!yes) { return; }
+                return w.CrontabApi.post('/admin/crontab/task/run', { name: name }).then(function (data) {
+                    var no = data && (data.task_no || data.async_task_id);
+                    w.CrontabApi.toast(no ? ('已提交执行，任务号 ' + no) : '已提交执行');
+                    if (table) { table.refresh(); }
+                });
+            })
+            .catch(function () { /* 错误已由请求层提示 */ });
+    };
+
+    function issueToken(scene, name) {
+        return w.CrontabApi.post('/admin/crontab/task/issuetoken', { scene: scene, name: name })
+            .then(function (data) { return (data && data.confirm_token) || ''; });
+    }
+
+    w.toggleTask = function (name, el) {
+        var status = Number(el && el.getAttribute('data-status')) === 1 ? 1 : 0;
+        var next = status === 1 ? 0 : 1;
+        var tip = next === 1 ? '启用后任务会按调度继续执行，确认启用？' : '停用后任务将不再按调度执行（可随时重新启用），确认停用？';
+
+        w.CrontabApi.confirm(tip, next === 1 ? '确认启用' : '确认停用')
+            .then(function (yes) {
+                if (!yes) { return; }
+                var p = next === 0 ? issueToken('crontab.task_disable', name) : Promise.resolve('');
+                return p.then(function (token) {
+                    return w.CrontabApi.post('/admin/crontab/task/toggle', {
+                        name: name,
+                        status: next,
+                        confirm_token: token
+                    }, next === 1 ? '已启用' : '已停用').then(function () {
+                        if (table) { table.refresh(); }
+                    });
+                });
+            })
+            .catch(function () { /* 忽略 */ });
+    };
+
+    w.deleteTask = function (name) {
+        w.CrontabApi.confirm('删除任务「' + name + '」及其依赖/维护窗口？历史执行日志会保留。', '确认删除')
+            .then(function (yes) {
+                if (!yes) { return; }
+                return issueToken('crontab.task_delete', name).then(function (token) {
+                    return w.CrontabApi.post('/admin/crontab/task/delete', {
+                        name: name,
+                        confirm_token: token
+                    }, '已删除').then(function () {
+                        if (table) { table.refresh(); }
+                    });
+                });
+            })
+            .catch(function () { /* 忽略 */ });
+    };
+
+    w.showErrors = function () {
+        w.CrontabApi.get('/admin/crontab/task/getlist', { page: 1, limit: 1 }).then(function (data) {
+            var errors = (data && data.errors) || {};
+            var names = Object.keys(errors);
+            if (!names.length) {
+                w.CrontabApi.toast('当前没有调度表达式错误');
+                return;
+            }
+
+            var html = '<div class="table-responsive"><table class="table table-sm mb-0"><thead><tr>'
+                + '<th style="width:200px">任务</th><th>错误</th></tr></thead><tbody>';
+            names.forEach(function (key) {
+                html += '<tr><td>' + esc(key) + '</td><td class="text-danger">' + esc(errors[key]) + '</td></tr>';
+            });
+            html += '</tbody></table></div>';
+
+            var ui = w.Wise && w.Wise.ui;
+            if (ui && ui.dialog && ui.dialog.open) {
+                ui.dialog.open(html, '调度表达式错误', { area: ['760px', '520px'] });
+            }
+        }).catch(function () { /* 忽略 */ });
+    };
+
+    /** 内核组件可能晚于本段脚本执行：轮询到就绪再建表 */
+    (function whenReady(tries) {
+        if (w.Wise && w.Wise.table) {
+            init();
+            return;
+        }
+        if (tries > 100) {
+            if (w.console) { w.console.warn('[crontab/task] 内核未就绪，列表未初始化'); }
+            return;
+        }
+        w.setTimeout(function () { whenReady(tries + 1); }, 50);
+    })(0);
+})(window);
+</script>
+{/block}

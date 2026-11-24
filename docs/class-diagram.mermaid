@@ -1,0 +1,191 @@
+classDiagram
+    direction TB
+
+    %% ====== 门面层 ======
+    class Facade {
+        <<facade>>
+        +getFacadeClass() string
+    }
+    note for Facade "extends think\\Facade\n@see CrontabManager"
+
+    %% ====== 服务注册 ======
+    class Service {
+        <<service>>
+        +register() void
+        +boot() void
+    }
+    note for Service "extends think\\Service\n注册命令+配置+容器绑定"
+
+    %% ====== 核心管理器 ======
+    class CrontabManager {
+        -array config
+        -TaskRepositoryInterface[] repositories
+        -TaskLock lock
+        +__construct(array config)
+        +dispatch() array
+        +getTasks() array
+        -loadTasksFromRepositories() array
+        -isTaskDue(array task) bool
+        +getUpcomingTasks(int limit) array
+    }
+
+    %% ====== 任务存储接口 ======
+    class TaskRepositoryInterface {
+        <<interface>>
+        +all() array
+        +findByName(string name) ?array
+        +isAvailable() bool
+    }
+
+    %% ====== 仓库实现 ======
+    class ConfigTaskRepository {
+        -array tasks
+        +__construct(array tasks)
+        +all() array
+        +findByName(string name) ?array
+        +isAvailable() bool
+    }
+
+    class DatabaseTaskRepository {
+        +__construct()
+        +all() array
+        +findByName(string name) ?array
+        +isAvailable() bool
+    }
+
+    %% ====== Cron 表达式 ======
+    class CronExpression {
+        -CronExpression inner
+        +__construct(string expression)
+        +isDue(string time) bool
+        +getNextRunDate(string time) DateTime
+        +getPreviousRunDate(string time) DateTime
+        +isValid(string expression)$ bool
+    }
+
+    %% ====== 任务执行器 ======
+    class TaskExecutor {
+        -array config
+        -int outputMaxBytes
+        +__construct(array config)
+        +execute(array task, TaskLock lock) array
+        -createLog(array task) TaskLogModel
+        -updateLog(TaskLogModel log, array result) void
+        -truncateOutput(string output) string
+    }
+
+    %% ====== 任务锁 ======
+    class TaskLock {
+        -string lockDir
+        -int ttl
+        +__construct(string lockDir, int ttl)
+        +acquire(string taskName) bool
+        +release(string taskName) void
+        +isLocked(string taskName) bool
+        -getLockFile(string taskName) string
+        -cleanupStaleLock(string lockFile) void
+    }
+
+    %% ====== 模型 ======
+    class TaskModel {
+        +string name
+        +string title
+        +string description
+        +string command
+        +string cron_expression
+        +int status
+        +int timeout
+        +int max_retries
+        +int allow_concurrent
+        +string source
+    }
+
+    class TaskLogModel {
+        +int id
+        +int task_id
+        +string task_name
+        +string status
+        +string output
+        +string error_output
+        +int exit_code
+        +string start_time
+        +string end_time
+        +float duration
+        +int retry_count
+        +int process_id
+    }
+
+    %% ====== 事件类 ======
+    class BeforeTaskExecute {
+        +readonly string taskName
+        +readonly string command
+        +readonly string cronExpression
+    }
+
+    class AfterTaskExecute {
+        +readonly string taskName
+        +readonly string command
+        +readonly int exitCode
+        +readonly float duration
+        +readonly string output
+    }
+
+    class TaskExecuteFailed {
+        +readonly string taskName
+        +readonly string command
+        +readonly int exitCode
+        +readonly float duration
+        +readonly string errorOutput
+        +readonly int retryCount
+    }
+
+    %% ====== 异常类 ======
+    class CrontabException {
+        +__construct(string message, int code, ?Throwable previous)
+    }
+
+    class TaskLockException {
+        +__construct(string message, int code, ?Throwable previous)
+    }
+
+    %% ====== CLI 命令 ======
+    class Publish {
+        +configure() void
+        +execute(Input input, Output output) int
+        -publishConfig(Output output, bool force) void
+        -publishMigrations(Output output) bool
+    }
+
+    class Run {
+        +configure() void
+        +execute(Input input, Output output) int
+    }
+
+    %% ====== 关系 ======
+    Facade ..|> CrontabManager : 「门面对应」
+    Service ..> CrontabManager : 容器绑定
+    Service ..> Publish : 注册命令
+    Service ..> Run : 注册命令
+
+    CrontabManager --> TaskRepositoryInterface : 依赖
+    CrontabManager --> CronExpression : 使用
+    CrontabManager --> TaskExecutor : 委托
+    CrontabManager --> TaskLock : 使用
+
+    TaskRepositoryInterface <|.. ConfigTaskRepository : 实现
+    TaskRepositoryInterface <|.. DatabaseTaskRepository : 实现
+
+    ConfigTaskRepository ..> TaskModel : 数据映射
+    DatabaseTaskRepository ..> TaskModel : 数据映射
+    DatabaseTaskRepository ..> TaskModel : 查询
+
+    TaskExecutor --> TaskLock : 使用
+    TaskExecutor --> TaskLogModel : 读写日志
+    TaskExecutor ..> BeforeTaskExecute : 触发
+    TaskExecutor ..> AfterTaskExecute : 触发
+    TaskExecutor ..> TaskExecuteFailed : 触发
+
+    CrontabException <|-- RuntimeException : 继承
+    TaskLockException <|-- RuntimeException : 继承
+
+    Run --> CrontabManager : 调用
