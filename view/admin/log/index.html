@@ -1,0 +1,167 @@
+{extend name="__WISE_VIEW__/base"}
+
+{block name="title"}执行日志{/block}
+
+{block name="content"}
+<div class="app-main container-fluid">
+    {include file="__WISE_VIEW__/index_header" icon="bi bi-journal-text" caption="执行日志" buttongroup="" /}
+
+    <form id="ws-filter" class="ws-filter-bar ws-filter-form row g-2 align-items-end" novalidate data-default-visible="1">
+        <div class="col-12 col-md-6 col-lg-3 ws-filter-item" data-field="task_name">
+            <label class="form-label" for="filter-task">任务</label>
+            <select id="filter-task" name="task_name" class="form-select form-select-sm">
+                <option value="">全部任务</option>
+                {foreach $task_names as $name}
+                <option value="{$name|htmlentities}">{$name|htmlentities}</option>
+                {/foreach}
+            </select>
+        </div>
+        <div class="col-12 col-md-6 col-lg-2 ws-filter-item" data-field="status">
+            <label class="form-label" for="filter-status">结果</label>
+            <select id="filter-status" name="status" class="form-select form-select-sm">
+                <option value="">全部结果</option>
+                <option value="success">成功</option>
+                <option value="failure">失败</option>
+                <option value="skipped">跳过</option>
+                <option value="running">执行中</option>
+            </select>
+        </div>
+        <div class="col-12 col-md-6 col-lg-3 ws-filter-item" data-field="keyword">
+            <label class="form-label" for="filter-keyword">输出关键词</label>
+            <input type="text" id="filter-keyword" name="keyword" class="form-control form-control-sm"
+                   placeholder="命令输出 / 异常信息" autocomplete="off">
+        </div>
+        <div class="col-12 col-lg-4 ws-filter-actions ms-auto justify-content-lg-end">
+            <button type="button" class="btn btn-sm btn-primary ws-filter-submit">
+                <i class="bi bi-search me-1"></i>查询
+            </button>
+            <button type="button" class="btn btn-sm btn-outline-secondary ws-filter-reset">重置</button>
+        </div>
+    </form>
+
+    <div id="toolbar" class="ws-toolbar"></div>
+    <table id="table"></table>
+
+    <p class="text-muted small mt-2 mb-0">
+        时区：{$timezone}。日志保留天数由 config/wise-crontab.php 的 log_retention_days 决定，清理走 <code>php think wise:crontab:clean</code>。
+    </p>
+</div>
+{/block}
+
+{block name="js"}
+{include file="admin/_crontab_api" /}
+<script nonce="{$csp_nonce|default=''}">
+(function (w) {
+    'use strict';
+
+    var table = null;
+
+    function esc(v) {
+        return w.EnhancedTable && w.EnhancedTable.utils
+            ? w.EnhancedTable.utils.escape(v == null ? '' : String(v))
+            : String(v == null ? '' : v).replace(/[&<>"']/g, function (c) {
+                return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+            });
+    }
+
+    var BADGE = { success: 'success', failure: 'danger', skipped: 'secondary', running: 'info' };
+    var TEXT = { success: '成功', failure: '失败', skipped: '跳过', running: '执行中' };
+
+    function statusCell(value) {
+        var key = String(value || '');
+        return '<span class="badge bg-' + (BADGE[key] || 'secondary') + '">' + esc(TEXT[key] || key) + '</span>';
+    }
+
+    function exitCodeCell(value, row) {
+        if (value === null || value === undefined || value === '') { return '<span class="text-muted">-</span>'; }
+        var ok = Number(value) === 0;
+        return '<span class="' + (ok ? 'text-success' : 'text-danger') + '">' + esc(value) + '</span>';
+    }
+
+    function operateCell(value, row) {
+        return '<button type="button" class="btn btn-sm btn-outline-primary" title="查看详情"'
+            + ' data-crontab-fn="logDetail" data-crontab-name="' + esc(row.id) + '"><i class="bi bi-eye"></i></button>';
+    }
+
+    function init() {
+        table = w.Wise.table.createSync({
+            idTable: 'table',
+            url: '/admin/crontab/log/getlist',
+            dataDataField: 'data.list',
+            dataTotalField: 'data.total',
+            pageSize: 20,
+            toolbarBtn: ['refresh'],
+            queryParams: function (params) {
+                var limit = params.limit > 0 ? params.limit : 20;
+                return {
+                    page: Math.floor((params.offset || 0) / limit) + 1,
+                    limit: limit,
+                    task_name: w.jQuery('#filter-task').val() || '',
+                    status: w.jQuery('#filter-status').val() || '',
+                    keyword: w.jQuery('#filter-keyword').val() || ''
+                };
+            },
+            columns: [
+                { field: 'id', title: 'ID', width: 80, align: 'center' },
+                { field: 'task_name', title: '任务', formatter: function (v) { return esc(v); }, width: 200 },
+                { field: 'status', title: '结果', formatter: statusCell, width: 90, align: 'center' },
+                { field: 'exit_code', title: '退出码', formatter: exitCodeCell, width: 90, align: 'center' },
+                { field: 'duration_text', title: '耗时', width: 110, align: 'center' },
+                { field: 'start_time', title: '开始时间', width: 170, align: 'center' },
+                { field: 'end_time', title: '结束时间', width: 170, align: 'center' },
+                { field: 'operate', title: '操作', formatter: operateCell, width: 90, align: 'center' }
+            ]
+        });
+
+        if (w.Wise.crud) {
+            w.Wise.crud.bindFilterBar({ form: '#ws-filter', table: table });
+        }
+    }
+
+    w.logDetail = function (id) {
+        w.CrontabApi.get('/admin/crontab/log/detail', { id: id }).then(function (log) {
+            if (!log) { return; }
+
+            var block = function (title, content, danger) {
+                if (!content) { return ''; }
+                return '<h6 class="mt-3">' + title + '</h6>'
+                    + '<pre class="bg-body-tertiary border rounded p-2 small mb-0" style="max-height:260px;overflow:auto;white-space:pre-wrap"' 
+                    + (danger ? ' data-danger="1"' : '') + '>' + esc(content) + '</pre>';
+            };
+
+            var html = '<div class="small">'
+                + '<div class="row g-2">'
+                + '<div class="col-6"><span class="text-muted">任务：</span>' + esc(log.task_name) + '</div>'
+                + '<div class="col-6"><span class="text-muted">结果：</span>' + statusCell(log.status) + '</div>'
+                + '<div class="col-6"><span class="text-muted">退出码：</span>' + esc(log.exit_code === null ? '-' : log.exit_code) + '</div>'
+                + '<div class="col-6"><span class="text-muted">耗时：</span>' + esc(log.duration_text || '-') + '</div>'
+                + '<div class="col-6"><span class="text-muted">开始：</span>' + esc(log.start_time || '-') + '</div>'
+                + '<div class="col-6"><span class="text-muted">结束：</span>' + esc(log.end_time || '-') + '</div>'
+                + '<div class="col-6"><span class="text-muted">重试：</span>' + esc(log.retry_count || 0) + '</div>'
+                + '<div class="col-6"><span class="text-muted">进程：</span>' + esc(log.process_id || '-') + '</div>'
+                + '</div>'
+                + block('标准输出', log.output)
+                + block('异常输出', log.error_output, true)
+                + '</div>';
+
+            var ui = w.Wise && w.Wise.ui;
+            if (ui && ui.dialog && ui.dialog.open) {
+                ui.dialog.open(html, '执行详情 #' + log.id, { area: ['860px', '620px'] });
+            }
+        }).catch(function () { /* 错误已提示 */ });
+    };
+
+    (function whenReady(tries) {
+        if (w.Wise && w.Wise.table) {
+            init();
+            return;
+        }
+        if (tries > 100) {
+            if (w.console) { w.console.warn('[crontab/log] 内核未就绪，列表未初始化'); }
+            return;
+        }
+        w.setTimeout(function () { whenReady(tries + 1); }, 50);
+    })(0);
+})(window);
+</script>
+{/block}

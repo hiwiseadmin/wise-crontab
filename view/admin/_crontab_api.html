@@ -1,0 +1,115 @@
+<script nonce="{$csp_nonce|default=''}">
+/**
+ * wise-crontab 后台页面共享请求层（包内视图片段，各页以 include 引入）
+ *
+ * ⚠️ 注释里不得出现真实的 include 标签字面量，否则会命中模板解析形成递归。
+ *
+ * 为什么统一走这一层：
+ *   - admin 应用启用 CSRF（VerifyCsrfToken 只放行 GET/HEAD）：写入必须带
+ *     `X-CSRF-TOKEN`（取页面 `<meta name="csrf-token">`）；
+ *   - RBAC 是「白名单 + 方法敏感」：写入必须命中注册方法（见 RouteRegistrar 注释）；
+ *   - 内核 `Wise.util.http` 已装配 `{code,msg,data}` 信封拦截器，失败自动 toast。
+ *
+ * 兜底：内核 ESM 未就绪时回退 jQuery（保留同样的信封解析与错误提示）。
+ */
+(function (w) {
+    'use strict';
+
+    function csrf() {
+        var m = w.document.querySelector('meta[name="csrf-token"]');
+        return m ? m.getAttribute('content') : '';
+    }
+
+    function ui() {
+        return (w.Wise && w.Wise.ui) || null;
+    }
+
+    function toast(msg, type) {
+        var u = ui();
+        if (u && u.toast) {
+            u.toast.show(msg, type === 'danger' ? 'error' : (type || 'success'));
+            return;
+        }
+        if (msg) { w.alert(msg); }
+    }
+
+    /** 二次确认 → Promise<boolean> */
+    function confirm(message, title) {
+        var u = ui();
+        if (u && u.dialog && u.dialog.confirm) {
+            return u.dialog.confirm(message, { title: title || '操作确认' });
+        }
+        return Promise.resolve(w.confirm(message));
+    }
+
+    function http() {
+        var h = w.Wise && w.Wise.util && w.Wise.util.http;
+        return (h && typeof h.request === 'function') ? h : null;
+    }
+
+    function fallback(method, url, data) {
+        return new Promise(function (resolve, reject) {
+            w.jQuery.ajax({
+                url: url,
+                type: method,
+                data: data || {},
+                dataType: 'json',
+                headers: { 'X-CSRF-TOKEN': csrf(), 'X-Requested-With': 'XMLHttpRequest' }
+            }).done(function (res) {
+                if (res && res.code === 0) { resolve(res.data); return; }
+                var msg = (res && res.msg) || '请求失败';
+                toast(msg, 'danger');
+                reject(new Error(msg));
+            }).fail(function () {
+                toast('请求失败，请稍后重试', 'danger');
+                reject(new Error('请求失败'));
+            });
+        });
+    }
+
+    /** POST 写入：成功提示由调用方决定（避免批量操作刷屏） */
+    function post(url, data, okMsg) {
+        var h = http();
+        var task = h ? h.post(url, data || {}) : fallback('POST', url, data);
+
+        return task.then(function (res) {
+            if (okMsg) { toast(okMsg); }
+            return res;
+        });
+    }
+
+    /** GET 读取 */
+    function get(url, query) {
+        var h = http();
+        var full = url;
+        if (query) {
+            var qs = Object.keys(query).filter(function (k) { return query[k] !== '' && query[k] !== null && query[k] !== undefined; })
+                .map(function (k) { return encodeURIComponent(k) + '=' + encodeURIComponent(query[k]); }).join('&');
+            if (qs) { full += (url.indexOf('?') === -1 ? '?' : '&') + qs; }
+        }
+
+        return h ? h.get(full) : fallback('GET', full);
+    }
+
+    /** 事件委托：data-crontab-fn="fnName" → window[fnName](name, el) */
+    w.document.addEventListener('click', function (e) {
+        var el = e.target && e.target.closest ? e.target.closest('[data-crontab-fn]') : null;
+        if (!el) { return; }
+
+        var fn = el.getAttribute('data-crontab-fn');
+        if (typeof w[fn] !== 'function') { return; }
+
+        e.preventDefault();
+        w[fn](el.getAttribute('data-crontab-name'), el);
+    });
+
+    w.CrontabApi = {
+        post: post,
+        get: get,
+        confirm: confirm,
+        toast: toast,
+        csrf: csrf,
+        dialog: function () { return ui() ? ui().dialog : null; }
+    };
+})(window);
+</script>
